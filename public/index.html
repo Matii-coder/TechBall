@@ -2,52 +2,32 @@
 <html lang="pl">
 <head>
   <meta charset="UTF-8" />
-  <title>Mini Haxball – Działa wszystko!</title>
+  <title>Mini Haxball Multiplayer</title>
   <style>
-    body {
-      margin: 0;
-      overflow: hidden;
-      background: #222;
-      font-family: Arial, sans-serif;
+    body { margin: 0; overflow: hidden; background: #222; font-family: Arial, sans-serif; }
+    canvas { display: block; background: #333; margin: 0 auto; }
+    #minimap {
+      position: absolute;
+      right: 10px;
+      bottom: 10px;
+      width: 160px;
+      height: 100px;
+      border: 2px solid white;
+      background: #111;
     }
-    canvas {
-      display: block;
-      background: #333;
-      margin: 0 auto;
-    }
-    #restartBtn, #startBtn, #changeNamesBtn {
+    #info, #scoreboard, #timer {
       position: absolute;
       left: 50%;
       transform: translateX(-50%);
-      padding: 10px 20px;
-      font-size: 16px;
-      background: white;
-      border: none;
-      cursor: pointer;
+      color: white;
+      font-size: 18px;
+      background: rgba(0, 0, 0, 0.5);
+      padding: 5px 15px;
+      border-radius: 5px;
     }
-    #restartBtn { top: 20px; display: none; }
-    #startBtn { top: 60%; }
-    #changeNamesBtn { top: 70px; display: none; }
-    #nameInputs {
-      position: absolute;
-      top: 35%;
-      left: 50%;
-      transform: translateX(-50%);
-      display: flex;
-      gap: 20px;
-      flex-direction: column;
-      align-items: center;
-    }
-    #nameInputs input {
-      padding: 8px;
-      font-size: 16px;
-      width: 120px;
-    }
-    #timeSelect {
-      padding: 8px;
-      font-size: 16px;
-      margin-top: 10px;
-    }
+    #info { top: 10px; }
+    #scoreboard { top: 45px; }
+    #timer { top: 80px; }
     #chatContainer {
       position: absolute;
       bottom: 10px;
@@ -83,483 +63,215 @@
       border: none;
       cursor: pointer;
     }
-    #senderButtons {
-      display: flex;
-      justify-content: space-around;
-      margin-top: 5px;
-    }
-    #senderButtons button {
-      padding: 5px 10px;
-      background: white;
-      border: none;
-      cursor: pointer;
-      font-size: 14px;
-    }
   </style>
 </head>
 <body>
 
-  <!-- CANVASY -->
-  <canvas id="game" width="800" height="500"></canvas>
-  <canvas id="minimap" width="160" height="100" style="position:absolute; right:10px; bottom:10px; border:2px solid white; background:#111;"></canvas>
+<canvas id="game" width="800" height="500"></canvas>
+<canvas id="minimap"></canvas>
+<div id="info">Oczekiwanie na graczy...</div>
+<div id="scoreboard">Niebiescy: 0 | Czerwoni: 0</div>
+<div id="timer">Czas: 00:00</div>
 
-  <!-- UI -->
-  <div id="nameInputs">
-    <input type="text" id="player1Name" placeholder="Niebieski gracz" />
-    <input type="text" id="player2Name" placeholder="Czerwony gracz" />
-    <select id="timeSelect">
-      <option value="60">1 minuta</option>
-      <option value="120" selected>2 minuty</option>
-      <option value="300">5 minut</option>
-    </select>
+<div id="chatContainer">
+  <div id="chatMessages"></div>
+  <div id="chatInput">
+    <input type="text" id="chatText" placeholder="Napisz wiadomość...">
+    <button id="sendBtn">Wyślij</button>
   </div>
-  <button id="startBtn">Start</button>
-  <button id="restartBtn">Zagraj ponownie</button>
-  <button id="changeNamesBtn">Zmień nazwy</button>
+</div>
 
-  <!-- AUDIO -->
-  <audio id="goalSound" src="https://actions.google.com/sounds/v1/crowds/goal_cheer.ogg"></audio>
-  <audio id="hitSound" src="https://actions.google.com/sounds/v1/impacts/wood_hit_and_scrape.ogg"></audio>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+  const canvas = document.getElementById("game");
+  const ctx = canvas.getContext("2d");
+  const minimap = document.getElementById("minimap");
+  const miniCtx = minimap.getContext("2d");
 
-  <!-- CZAT -->
-  <div id="chatContainer">
-    <div id="chatMessages"></div>
-    <div id="chatInput">
-      <input type="text" id="chatText" placeholder="Napisz wiadomość...">
-      <button id="sendBtn">Wyślij</button>
-    </div>
-    <div id="senderButtons">
-      <button onclick="setSender('Niebieski')">Niebieski</button>
-      <button onclick="setSender('Czerwony')">Czerwony</button>
-    </div>
-  </div>
+  const socket = io();
+  let playerType = null;
+  let players = [];
+  let ball = {};
+  let confetti = [];
+  let goalText = "";
+  let goalTimer = 0;
+  let remaining = 0;
+  let matchEnded = false;
 
-  <!-- SKRYPT -->
-  <script>
-   const canvas = document.getElementById("game");
-const ctx = canvas.getContext("2d");
-const minimap = document.getElementById("minimap");
-const miniCtx = minimap.getContext("2d");
+  const keys = { up: false, down: false, left: false, right: false };
 
-const restartBtn = document.getElementById("restartBtn");
-const startBtn = document.getElementById("startBtn");
-const changeNamesBtn = document.getElementById("changeNamesBtn");
-const nameInputs = document.getElementById("nameInputs");
-const player1Input = document.getElementById("player1Name");
-const player2Input = document.getElementById("player2Name");
-const timeSelect = document.getElementById("timeSelect");
-
-const goalSound = document.getElementById("goalSound");
-const hitSound = document.getElementById("hitSound");
-
-const keys = {};
-const playerSize = 20;
-const ballSize = 12;
-const maxTrail = 10;
-const ballTrail = [];
-let matchDuration = 120;
-
-let startTime = null;
-let gameStarted = false;
-let gameOver = false;
-let winner = "";
-let isPaused = false;
-let pauseStart = 0;
-let totalPausedTime = 0;
-
-let goalText = "";
-let goalTimer = 0;
-
-const particles = [];
-
-function createConfetti(x, y, color) {
-  for (let i = 0; i < 50; i++) {
-    particles.push({
-      x, y,
-      vx: (Math.random() - 0.5) * 6,
-      vy: (Math.random() - 1) * 6,
-      size: Math.random() * 4 + 2,
-      color,
-      life: 60
-    });
-  }
-}
-
-function updateConfetti() {
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i];
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.2;
-    p.life--;
-    if (p.life <= 0) particles.splice(i, 1);
-  }
-}
-
-function drawConfetti() {
-  for (const p of particles) {
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
-  }
-}
-
-class Player {
-  constructor(x, y, color) {
-    this.x = x;
-    this.y = y;
-    this.color = color;
-    this.score = 0;
-    this.name = "";
-  }
-
-  move(up, down, left, right) {
-    if (keys[up]) this.y -= 4;
-    if (keys[down]) this.y += 4;
-    if (keys[left]) this.x -= 4;
-    if (keys[right]) this.x += 4;
-    this.x = Math.max(0, Math.min(canvas.width, this.x));
-    this.y = Math.max(0, Math.min(canvas.height, this.y));
-  }
-
-  draw() {
-    drawPlayerName(this);
-    drawCircle(this, playerSize);
-  }
-
-  drawMini(scaleX, scaleY) {
-    miniCtx.fillStyle = this.color;
-    miniCtx.beginPath();
-    miniCtx.arc(this.x * scaleX, this.y * scaleY, 3, 0, Math.PI * 2);
-    miniCtx.fill();
-  }
-}
-
-class Ball {
-  constructor(x, y) {
-    this.x = x;
-    this.y = y;
-    this.vx = 3;
-    this.vy = 2;
-    this.color = "white";
-  }
-
-  reset() {
-    this.x = 400;
-    this.y = 250;
-    this.vx = (Math.random() > 0.5 ? 1 : -1) * 3;
-    this.vy = (Math.random() > 0.5 ? 1 : -1) * 2;
-    ballTrail.length = 0;
-  }
-
-  update() {
-    this.x += this.vx;
-    this.y += this.vy;
-    if (this.y <= 0 || this.y >= canvas.height) this.vy *= -1;
-    if (this.x <= 0 || this.x >= canvas.width) this.vx *= -1;
-    this.vx *= 0.99;
-    this.vy *= 0.99;
-
-    const speed = Math.hypot(this.vx, this.vy);
-    const maxSpeed = 6;
-    if (speed > maxSpeed) {
-      this.vx *= maxSpeed / speed;
-      this.vy *= maxSpeed / speed;
-    }
-
-    ballTrail.push({ x: this.x, y: this.y });
-    if (ballTrail.length > maxTrail) ballTrail.shift();
-  }
-
-  draw() {
-    drawBallTrail();
-    drawCircle(this, ballSize);
-  }
-
-  drawMini(scaleX, scaleY) {
-    miniCtx.fillStyle = "white";
-    miniCtx.beginPath();
-    miniCtx.arc(this.x * scaleX, this.y * scaleY, 2, 0, Math.PI * 2);
-    miniCtx.fill();
-  }
-}
-
-const player1 = new Player(50, 250, "blue");
-const player2 = new Player(750, 250, "red");
-const ball = new Ball(400, 250);
-
-document.addEventListener("keydown", e => {
-  keys[e.code] = true;
-  if (e.code === "KeyP" && gameStarted && !gameOver) {
-    isPaused = !isPaused;
-    if (isPaused) {
-      pauseStart = Date.now();
-    } else {
-      totalPausedTime += Date.now() - pauseStart;
-    }
-  }
-});
-document.addEventListener("keyup", e => keys[e.code] = false);
-
-startBtn.addEventListener("click", () => {
-  matchDuration = parseInt(timeSelect.value);
-  gameStarted = true;
-  startTime = Date.now();
-  startBtn.style.display = "none";
-  nameInputs.style.display = "none";
-  changeNamesBtn.style.display = "none";
-  player1.name = player1Input.value.trim() || "Gracz 1";
-  player2.name = player2Input.value.trim() || "Gracz 2";
-});
-
-restartBtn.addEventListener("click", () => {
-  player1.score = 0;
-  player2.score = 0;
-  gameOver = false;
-  winner = "";
-  totalPausedTime = 0;
-  startTime = Date.now();
-  restartBtn.style.display = "none";
-  changeNamesBtn.style.display = "block";
-  ball.reset();
-});
-
-changeNamesBtn.addEventListener("click", () => {
-  nameInputs.style.display = "flex";
-  startBtn.style.display = "block";
-  changeNamesBtn.style.display = "none";
-});
-
-function update() {
-  if (!gameStarted || gameOver || isPaused) return;
-
-  const elapsed = Math.floor((Date.now() - startTime - totalPausedTime) / 1000);
-  const remaining = matchDuration - elapsed;
-  if (remaining <= 0) {
-    gameOver = true;
-    winner = player1.score > player2.score
-      ? "Niebieska drużyna wygrywa!"
-      : player2.score > player1.score
-      ? "Czerwona drużyna wygrywa!" : "Remis!";
-    restartBtn.style.display = "block";
-    return;
-  }
-
-  player1.move("KeyW", "KeyS", "KeyA", "KeyD");
-  player2.move("ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight");
-  ball.update();
-
-  [player1, player2].forEach(player => {
-    const dx = ball.x - player.x;
-    const dy = ball.y - player.y;
-    const dist = Math.hypot(dx, dy);
-    if (dist < playerSize + ballSize) {
-      const angle = Math.atan2(dy, dx);
-      ball.vx = Math.cos(angle) * 4;
-      ball.vy = Math.sin(angle) * 4;
-      hitSound.currentTime = 0;
-      hitSound.play();
-    }
+  document.addEventListener("keydown", (e) => {
+    if (e.code === "KeyW" || e.code === "ArrowUp") keys.up = true;
+    if (e.code === "KeyS" || e.code === "ArrowDown") keys.down = true;
+    if (e.code === "KeyA" || e.code === "ArrowLeft") keys.left = true;
+    if (e.code === "KeyD" || e.code === "ArrowRight") keys.right = true;
   });
 
-  if (ball.x < 0 && ball.y > 200 && ball.y < 300) {
-    player2.score++;
-    goalSound.currentTime = 0;
-    goalSound.play();
-    goalText = "GOOOOOL! CZERWONI!";
-    goalTimer = 120;
-    ball.reset();
-    createConfetti(canvas.width / 2, canvas.height / 2, "red");
-  } else if (ball.x > canvas.width && ball.y > 200 && ball.y < 300) {
-    player1.score++;
-    goalSound.currentTime = 0;
-    goalSound.play();
-    goalText = "GOOOOOL! NIEBIESCY!";
-    goalTimer = 120;
-    ball.reset();
-    createConfetti(canvas.width / 2, canvas.height / 2, "cyan");
-  }
+  document.addEventListener("keyup", (e) => {
+    if (e.code === "KeyW" || e.code === "ArrowUp") keys.up = false;
+    if (e.code === "KeyS" || e.code === "ArrowDown") keys.down = false;
+    if (e.code === "KeyA" || e.code === "ArrowLeft") keys.left = false;
+    if (e.code === "KeyD" || e.code === "ArrowRight") keys.right = false;
+  });
 
-  if (goalTimer > 0) goalTimer--;
+  setInterval(() => socket.emit("inputs", keys), 1000 / 60);
 
-  updateConfetti();
-}
+  socket.on("playerType", (type) => {
+    playerType = type;
+    document.getElementById("info").textContent = `Dołączyłeś jako: ${type === "player1" ? "Niebieski" : "Czerwony"}`;
+  });
 
-function draw() {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  drawField();
-  drawGoals();
-  drawScore();
-  drawTimer();
-  player1.draw();
-  player2.draw();
-  ball.draw();
-  drawGoalText();
-  drawMiniMap();
-  drawConfetti();
-  if (isPaused) drawPauseOverlay();
-  if (gameOver) drawGameOver();
-}
+  socket.on("full", () => {
+    document.getElementById("info").textContent = "Pokój pełny. Spróbuj później.";
+  });
 
-function drawCircle(obj, size) {
-  ctx.beginPath();
-  ctx.arc(obj.x, obj.y, size, 0, Math.PI * 2);
-  ctx.fillStyle = obj.color;
-  ctx.fill();
-}
+  socket.on("gameState", (state) => {
+    players = state.players;
+    ball = state.ball;
+    confetti = state.confetti;
+    goalText = state.goalText;
+    goalTimer = state.goalTimer;
+    remaining = state.remaining;
+    matchEnded = state.matchEnded;
 
-function drawBallTrail() {
-  for (let i = 0; i < ballTrail.length; i++) {
-    const alpha = i / ballTrail.length;
+    const p1 = players.find(p => p.type === "player1");
+    const p2 = players.find(p => p.type === "player2");
+    document.getElementById("scoreboard").textContent = `Niebiescy: ${p1?.score || 0} | Czerwoni: ${p2?.score || 0}`;
+
+    const min = String(Math.floor(remaining / 60)).padStart(2, "0");
+    const sec = String(remaining % 60).padStart(2, "0");
+    document.getElementById("timer").textContent = matchEnded ? "Koniec gry!" : `Czas: ${min}:${sec}`;
+  });
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Pole gry
+    ctx.strokeStyle = "white";
+    ctx.lineWidth = 2;
+
     ctx.beginPath();
-    ctx.arc(ballTrail[i].x, ballTrail[i].y, ballSize, 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.4})`;
+    ctx.moveTo(0, canvas.height / 3);
+    ctx.lineTo(canvas.width, canvas.height / 3);
+    ctx.moveTo(0, (canvas.height / 3) * 2);
+    ctx.lineTo(canvas.width, (canvas.height / 3) * 2);
+    ctx.moveTo(canvas.width / 2, 0);
+    ctx.lineTo(canvas.width / 2, canvas.height);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, 50, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(canvas.width / 2, canvas.height / 2, 4, 0, Math.PI * 2);
     ctx.fill();
+
+    ctx.fillStyle = "rgba(0, 0, 255, 0.1)";
+    ctx.fillRect(0, 150, 60, 200);
+    ctx.fillStyle = "rgba(255, 0, 0, 0.1)";
+    ctx.fillRect(740, 150, 60, 200);
+    ctx.strokeRect(0, 150, 60, 200);
+    ctx.strokeRect(740, 150, 60, 200);
+    ctx.strokeRect(0, 200, 5, 100);
+    ctx.strokeRect(canvas.width - 5, 200, 5, 100);
+
+    if (ball.trail) {
+      for (let i = 0; i < ball.trail.length; i++) {
+        const alpha = i / ball.trail.length;
+        ctx.beginPath();
+        ctx.arc(ball.trail[i].x, ball.trail[i].y, 12, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,255,${alpha * 0.4})`;
+        ctx.fill();
+      }
+    }
+
+    ctx.fillStyle = "white";
+    ctx.beginPath();
+    ctx.arc(ball.x, ball.y, 12, 0, Math.PI * 2);
+    ctx.fill();
+
+    for (const p of players) {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = "white";
+      ctx.font = "14px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(p.name, p.x, p.y - 30);
+    }
+
+    for (const c of confetti) {
+      ctx.fillStyle = c.color;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, c.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (goalTimer > 0) {
+      ctx.fillStyle = goalText.includes("NIEBIESCY") ? "rgba(0,0,255,0.9)" : "rgba(255,0,0,0.9)";
+      ctx.font = "bold 60px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText(goalText, canvas.width / 2, canvas.height / 2);
+    }
+
+    drawMinimap();
+    requestAnimationFrame(draw);
   }
-}
 
-function drawPlayerName(player) {
-  ctx.fillStyle = "white";
-  ctx.font = "14px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText(player.name, player.x, player.y - playerSize - 10);
-}
+  function drawMinimap() {
+    minimap.width = 160;
+    minimap.height = 100;
+    const scaleX = minimap.width / canvas.width;
+    const scaleY = minimap.height / canvas.height;
 
-function drawGoalText() {
-  if (goalTimer > 0) {
-    ctx.fillStyle = goalText.includes("NIEBIESCY") ? "rgba(0,0,255,0.9)" : "rgba(255,0,0,0.9)";
-    ctx.font = "bold 60px Arial";
-    ctx.textAlign = "center";
-    ctx.fillText(goalText, canvas.width / 2, canvas.height / 2);
+    miniCtx.clearRect(0, 0, minimap.width, minimap.height);
+    miniCtx.fillStyle = "#111";
+    miniCtx.fillRect(0, 0, minimap.width, minimap.height);
+    miniCtx.strokeStyle = "white";
+    miniCtx.strokeRect(0, 0, minimap.width, minimap.height);
+
+    for (const p of players) {
+      miniCtx.fillStyle = p.color;
+      miniCtx.beginPath();
+      miniCtx.arc(p.x * scaleX, p.y * scaleY, 3, 0, Math.PI * 2);
+      miniCtx.fill();
+    }
+
+    miniCtx.fillStyle = "white";
+    miniCtx.beginPath();
+    miniCtx.arc(ball.x * scaleX, ball.y * scaleY, 2, 0, Math.PI * 2);
+    miniCtx.fill();
   }
-}
 
-function drawPauseOverlay() {
-  ctx.fillStyle = "rgba(0,0,0,0.5)";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "white";
-  ctx.font = "40px Arial";
-  ctx.textAlign = "center";
-  ctx.fillText("PAUZA", canvas.width / 2, canvas.height / 2);
-}
-
-function drawGameOver() {
-  ctx.fillStyle = "white";
-  ctx.font = "40px Arial";
-  ctx.fillText(winner, canvas.width / 2, 250);
-}
-
-function drawField() {
-  ctx.strokeStyle = "white";
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(0, canvas.height / 3);
-  ctx.lineTo(canvas.width, canvas.height / 3);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(0, (canvas.height / 3) * 2);
-  ctx.lineTo(canvas.width, (canvas.height / 3) * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.moveTo(canvas.width / 2, 0);
-  ctx.lineTo(canvas.width / 2, canvas.height);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(canvas.width / 2, canvas.height / 2, 50, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(canvas.width / 2, canvas.height / 2, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(0, 0, 255, 0.1)";
-  ctx.fillRect(0, 150, 60, 200);
-  ctx.fillStyle = "rgba(255, 0, 0, 0.1)";
-  ctx.fillRect(740, 150, 60, 200);
-  ctx.strokeRect(0, 150, 60, 200);
-  ctx.strokeRect(740, 150, 60, 200);
-}
-
-function drawGoals() {
-  ctx.strokeStyle = "white";
-  ctx.lineWidth = 2;
-  ctx.strokeRect(0, 200, 5, 100);
-  ctx.strokeRect(canvas.width - 5, 200, 5, 100);
-}
-
-function drawScore() {
-  ctx.fillStyle = "white";
-  ctx.font = "20px Arial";
-  ctx.fillText(`Niebiescy: ${player1.score}`, 20, 30);
-  ctx.fillText(`Czerwoni: ${player2.score}`, 650, 30);
-}
-
-function drawTimer() {
-  const elapsed = Math.floor((Date.now() - startTime - totalPausedTime) / 1000);
-  const remaining = Math.max(0, matchDuration - elapsed);
-  const min = Math.floor(remaining / 60).toString().padStart(2, '0');
-  const sec = (remaining % 60).toString().padStart(2, '0');
-  ctx.fillStyle = "white";
-  ctx.font = "20px Arial";
-  ctx.fillText(`${min}:${sec}`, 370, 30);
-}
-
-function drawMiniMap() {
-  const scaleX = minimap.width / canvas.width;
-  const scaleY = minimap.height / canvas.height;
-  miniCtx.clearRect(0, 0, minimap.width, minimap.height);
-  miniCtx.fillStyle = "#111";
-  miniCtx.fillRect(0, 0, minimap.width, minimap.height);
-  miniCtx.strokeStyle = "white";
-  miniCtx.strokeRect(0, 0, minimap.width, minimap.height);
-  player1.drawMini(scaleX, scaleY);
-  player2.drawMini(scaleX, scaleY);
-  ball.drawMini(scaleX, scaleY);
-}
-
-function loop() {
-  update();
   draw();
-  requestAnimationFrame(loop);
-}
 
-window.onload = () => {
-  const savedP1 = localStorage.getItem("player1Name");
-  const savedP2 = localStorage.getItem("player2Name");
-  if (savedP1) player1Input.value = savedP1;
-  if (savedP2) player2Input.value = savedP2;
-};
+  const chatInput = document.getElementById("chatText");
+  const sendBtn = document.getElementById("sendBtn");
+  const chatMessages = document.getElementById("chatMessages");
 
-loop();
+  sendBtn.addEventListener("click", sendChat);
+  chatInput.addEventListener("keypress", (e) => {
+    if (e.key === "Enter") sendChat();
+  });
 
-// --- CZAT ---
-const chatMessages = document.getElementById("chatMessages");
-const chatText = document.getElementById("chatText");
-const sendBtn = document.getElementById("sendBtn");
-
-let currentSender = "Niebieski";
-
-function setSender(sender) {
-  currentSender = sender;
-}
-
-sendBtn.addEventListener("click", sendMessage);
-chatText.addEventListener("keypress", function(e) {
-  if (e.key === "Enter") sendMessage();
-});
-
-function sendMessage() {
-  const text = chatText.value.trim();
-  if (text !== "") {
-    const message = document.createElement("div");
-    message.textContent = `${currentSender}: ${text}`;
-    message.style.color = currentSender === "Niebieski" ? "cyan" : "red";
-    chatMessages.appendChild(message);
-    chatText.value = "";
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+  function sendChat() {
+    const text = chatInput.value.trim();
+    if (text !== "") {
+      const sender = playerType === "player1" ? "Niebieski" : "Czerwony";
+      socket.emit("chatMessage", { sender, text });
+      chatInput.value = "";
+    }
   }
-}
 
-  </script>
-
+  socket.on("chatMessage", ({ sender, text }) => {
+    const message = document.createElement("div");
+    message.textContent = `${sender}: ${text}`;
+    message.style.color = sender === "Niebieski" ? "cyan" : "red";
+    chatMessages.appendChild(message);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  });
+</script>
 </body>
 </html>
